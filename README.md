@@ -1,10 +1,10 @@
 # Sentinel Analyzer
 
-A shift-left policy governance utility designed to validate Sentinel code layout/unit tests locally, and simulate policy blast radius against live Terraform Enterprise (TFE / HCP Terraform) workspaces before merging code to production[cite: 6, 7, 11].
+A shift-left policy governance utility designed to validate Sentinel code layout/unit tests locally, and simulate policy blast radius against live Terraform Enterprise (TFE / HCP Terraform) workspaces before merging code to production.
 
 ## 📁 Repository Layout
-*   `scripts/sentinel_analyzer.py`: Unified Python engine handling both local validation (`sentinel fmt`/`test`) and remote TFE workspace impact analysis[cite: 6, 7].
-*   `scripts/Taskfile.yml`: Task runner orchestration framework[cite: 11].
+*   `scripts/sentinel_analyzer.py`: Unified Python engine handling both local validation (`sentinel fmt`/`test`) and remote TFE workspace impact analysis.
+*   `scripts/Taskfile.yml`: Task runner orchestration framework.
 
 ---
 
@@ -12,7 +12,7 @@ A shift-left policy governance utility designed to validate Sentinel code layout
 
 *   **Python 3.10+**
 *   **HashiCorp Sentinel CLI** (installed and available in `$PATH`)
-*   **Task CLI** (`go-task` / `task`)[cite: 11]
+*   **Task CLI** (`go-task` / `task`)
 
 ### Environment Variables
 Set your TFE authentication token before running impact analysis:
