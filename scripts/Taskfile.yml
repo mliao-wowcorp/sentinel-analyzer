@@ -1,0 +1,24 @@
+version: '3'
+
+vars:
+  DEFAULT_POLICY: "odessa_tenants/azure/networking/azure-gr-loadbalancer-deny-policies.sentinel"
+
+tasks:
+  # 🎯 COMBINED TASK: Runs Validation first, then Blast Radius Analysis
+  analyze:all:
+    desc: "Executes local Sentinel validation (fmt + test) AND TFE Blast Radius Impact Analysis"
+    cmds:
+      - task: validate
+      - task: impact
+
+  # 1️⃣ FEATURE 1: Local Code Validation (Formatting & Unit Tests)
+  validate:
+    desc: "Runs local Sentinel formatting checks (sentinel fmt) and unit test assertions (sentinel test)"
+    cmds:
+      - python {{.TASKFILE_DIR}}/sentinel_validator.py "{{.POLICY | default .DEFAULT_POLICY}}"
+
+  # 2️⃣ FEATURE 2: TFE Workspace Impact Analysis
+  impact:
+    desc: "Evaluates target Sentinel policy against remote TFE workspace state histories"
+    cmds:
+      - python {{.TASKFILE_DIR}}/sentinel_impact_analyzer.py "{{.POLICY | default .DEFAULT_POLICY}}"
