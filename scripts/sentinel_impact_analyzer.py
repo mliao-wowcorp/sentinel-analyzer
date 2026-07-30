@@ -10,7 +10,7 @@ import urllib.error
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# Color definitions for Windows Terminal
+# Color definitions
 C_GREEN  = "\033[1;32m"
 C_RED    = "\033[1;31m"
 C_YELLOW = "\033[1;33m"
@@ -71,7 +71,7 @@ def build_pseudo_plan(state_json):
             pseudo_plan["resource_changes"][address] = change_obj
     return pseudo_plan
 
-def process_single_workspace(ws_name, ws_info, tfe_org, tfe_token, policy_path, targeted_resource_types):
+def process_single_workspace(ws_name, ws_info, tfe_org, tfe_token, policy_path, targeted_resource_types, dry_run):
     result_record = {
         "workspace": ws_name,
         "env": "unknown",
@@ -95,11 +95,74 @@ def process_single_workspace(ws_name, ws_info, tfe_org, tfe_token, policy_path, 
         
         if has_state_history and resources_in_state == 0:
             result_record["status"] = "INACTIVE"
-            result_record["details"] = "Workspace manages 0 live resources in cloud state."
+            result_record["details"] = "Ghost Asset: Workspace manages 0 live resources in cloud state."
             return result_record
         
         plan_payload = None
-        if resources_in_state > 0 and has_state_history:
+        has_recent_error = False
+
+        # 1. Attempt to fetch recent plan
+        runs_url = f"https://app.terraform.io/api/v2/workspaces/{ws_id}/runs?page%5Bsize%5D=10"
+        try:
+            runs_data = make_tfe_request(runs_url, tfe_token)
+            if runs_data.get('data'):
+                latest_status = runs_data['data'][0]['attributes']['status']
+                if latest_status in ["errored", "plan_errors"]:
+                    has_recent_error = True
+                
+                for run in runs_data['data']:
+                    run_status = run['attributes']['status']
+                    if run_status not in ["errored", "plan_errors", "pending", "planning", "canceled", "discarded"]:
+                        plan_rel = run['relationships'].get('plan', {}).get('data')
+                        if plan_rel:
+                            try:
+                                plan_url = f"https://app.terraform.io/api/v2/plans/{plan_rel['id']}/json-output"
+                                tmp_payload = make_tfe_request(plan_url, tfe_token)
+                                if tmp_payload:
+                                    plan_payload = tmp_payload
+                                    result_record["evaluation_source"] = "LIVE_PLAN"
+                                    break
+                            except Exception:
+                                plan_payload = None
+        except Exception:
+            plan_payload = None
+
+        # 2. Trigger Live Plan if DRY_RUN is False and no recent plan exists
+        if not plan_payload and not has_recent_error and not dry_run:
+            run_trigger_url = "https://app.terraform.io/api/v2/runs"
+            trigger_payload = {
+                "data": {
+                    "type": "runs",
+                    "attributes": {"plan-only": True, "message": "Automated Sentinel Verification"},
+                    "relationships": {"workspace": {"data": {"type": "workspaces", "id": ws_id}}}
+                }
+            }
+            try:
+                triggered_run = make_tfe_request(run_trigger_url, tfe_token, method="POST", payload=trigger_payload)
+                new_run_id = triggered_run['data']['id']
+                
+                timeout = 120  
+                start_time = time.time()
+                while time.time() - start_time < timeout:
+                    time.sleep(10)
+                    check_run_url = f"https://app.terraform.io/api/v2/runs/{new_run_id}"
+                    run_status_data = make_tfe_request(check_run_url, tfe_token)
+                    current_status = run_status_data['data']['attributes']['status']
+                    plan_rel = run_status_data['data']['relationships'].get('plan', {}).get('data')
+                    
+                    if plan_rel and plan_rel.get('id') and current_status not in ["pending", "planning"]:
+                        new_plan_id = plan_rel['id']
+                        new_plan_url = f"https://app.terraform.io/api/v2/plans/{new_plan_id}/json-output"
+                        plan_payload = make_tfe_request(new_plan_url, tfe_token)
+                        result_record["evaluation_source"] = "LIVE_PLAN"
+                        break
+                    elif current_status in ["errored", "canceled", "rejected"]:
+                        break
+            except Exception:
+                plan_payload = None
+
+        # 3. Fallback to state version if plan payload unavailable
+        if not plan_payload and resources_in_state > 0 and has_state_history:
             try:
                 state_url = f"https://app.terraform.io/api/v2/workspaces/{ws_id}/current-state-version"
                 state_data = make_tfe_request(state_url, tfe_token)
@@ -114,9 +177,10 @@ def process_single_workspace(ws_name, ws_info, tfe_org, tfe_token, policy_path, 
 
         if not plan_payload:
             result_record["status"] = "UNSTABLE"
-            result_record["details"] = "Unable to fetch state metrics baseline profiles."
+            result_record["details"] = "Unable to fetch state or plan metrics baseline profiles."
             return result_record
 
+        # Check for targeted resource types
         changes_map = plan_payload.get("resource_changes", {})
         changes_iterator = changes_map.values() if isinstance(changes_map, dict) else changes_map
         has_targeted_resources = any(change.get("type") in targeted_resource_types for change in changes_iterator)
@@ -156,6 +220,73 @@ def process_single_workspace(ws_name, ws_info, tfe_org, tfe_token, policy_path, 
         
     return result_record
 
+def generate_html_report(results, policy_base, timestamp, script_dir):
+    count_pass = sum(1 for r in results if r["status"] == "PASS")
+    count_blocked = sum(1 for r in results if r["status"] == "BLOCKED")
+    count_excluded = sum(1 for r in results if r["status"] == "EXCLUDED")
+    
+    status_text = "PASSED" if count_blocked == 0 else "VIOLATION DETECTED"
+    status_color = "#28a745" if count_blocked == 0 else "#dc3545"
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+    <title>Sentinel Blast Radius Impact Analysis Report</title>
+    <style>
+        body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 40px; background: #f8f9fa; color: #333; }}
+        .card {{ background: white; padding: 25px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 20px; }}
+        .badge {{ display: inline-block; padding: 6px 12px; font-weight: bold; border-radius: 4px; color: white; }}
+        table {{ width: 100%; border-collapse: collapse; margin-top: 20px; }}
+        th, td {{ padding: 12px; text-align: left; border-bottom: 1px solid #dee2e6; }}
+        th {{ background-color: #f1f3f5; font-weight: 600; }}
+        .badge-pass {{ background-color: #28a745; }}
+        .badge-blocked {{ background-color: #dc3545; }}
+        .badge-excluded {{ background-color: #6c757d; }}
+        .badge-env {{ background-color: #0078d4; color: white; padding: 2px 6px; border-radius: 4px; font-family: monospace; }}
+        .details-box {{ font-family: monospace; font-size: 0.85em; background: #f8f9fa; padding: 8px; border-radius: 4px; border-left: 3px solid #6c757d; white-space: pre-wrap; }}
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h2>🛡️ Sentinel Blast Radius Impact Analysis Summary</h2>
+        <p><strong>Target Policy:</strong> <code>{policy_base}</code></p>
+        <p><strong>Timestamp:</strong> {timestamp}</p>
+        <p><strong>Status:</strong> <span class="badge" style="background: {status_color}">{status_text}</span></p>
+        <p><strong>Workspaces Evaluated:</strong> Total: {len(results)} | Clean: {count_pass} | Blocked: {count_blocked} | Out of Scope: {count_excluded}</p>
+    </div>
+    <div class="card">
+        <h3>Evaluated Workspace Matrix</h3>
+        <table>
+            <tr><th>Status</th><th>Env</th><th>Target Workspace Scope</th><th>Data Source</th><th>Diagnostic Context</th></tr>
+    """
+
+    for r in results:
+        if r["status"] == "EXCLUDED":
+            continue
+        badge_cls = "badge-pass" if r["status"] == "PASS" else "badge-blocked" if r["status"] == "BLOCKED" else "badge-excluded"
+        
+        html += f"""
+            <tr>
+                <td><span class="badge {badge_cls}">{r['status']}</span></td>
+                <td><span class="badge-env">{r['env'].upper()}</span></td>
+                <td><strong>{r['workspace']}</strong></td>
+                <td><code>{r['evaluation_source']}</code></td>
+                <td><div class="details-box">{r['details']}</div></td>
+            </tr>
+        """
+
+    html += """
+        </table>
+    </div>
+</body>
+</html>
+    """
+    
+    html_file = os.path.join(script_dir, f"sentinel_impact_report_{timestamp}.html")
+    with open(html_file, "w", encoding="utf-8") as f:
+        f.write(html)
+    return html_file
+
 def main():
     if len(sys.argv) < 2:
         print(f"{C_RED}[-] Usage: python sentinel_impact_analyzer.py <policy_path>{C_RESET}")
@@ -163,14 +294,18 @@ def main():
 
     policy_path = sys.argv[1]
     policy_base = os.path.basename(policy_path)
-    policy_name = policy_base.replace(".sentinel", "")
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+
+    tfe_token = os.getenv("TFE_TOKEN")
+    tfe_org = os.getenv("TFE_ORG", "WoolworthsCorp")
+    dry_run = os.getenv("DRY_RUN", "true").lower() == "true"
 
     print(f"\n{C_CYAN}========================================================================{C_RESET}")
     print(f"{C_CYAN}🚀 STAGE 2: TFE WORKSPACE BLAST RADIUS IMPACT ANALYSIS ({policy_base}){C_RESET}")
     print(f"{C_CYAN}========================================================================{C_RESET}")
 
-    tfe_token = os.getenv("TFE_TOKEN")
-    tfe_org = os.getenv("TFE_ORG", "WoolworthsCorp")
+    if dry_run:
+        print(f"{C_YELLOW}⚠️  [LOG ALERT] RUNNING IN ENVIRONMENT DRY RUN SAMPLE MODE. NO LIVE REMOTE PLANS WILL BE CREATED.{C_RESET}")
 
     if not tfe_token:
         print(f"{C_RED}[-] Error: Environment variable 'TFE_TOKEN' is missing.{C_RESET}")
@@ -225,7 +360,7 @@ def main():
     results = []
     with ThreadPoolExecutor(max_workers=5) as executor:
         futures = {
-            executor.submit(process_single_workspace, ws, info, tfe_org, tfe_token, policy_path, targeted_resource_types): ws
+            executor.submit(process_single_workspace, ws, info, tfe_org, tfe_token, policy_path, targeted_resource_types, dry_run): ws
             for ws, info in candidate_workspaces.items()
         }
         for future in as_completed(futures):
@@ -233,28 +368,21 @@ def main():
 
     results.sort(key=lambda x: (ENV_PRIORITY.get(x["env"], 99), x["workspace"]))
 
-    # Print Summary Scorecard
-    print(f"\n{C_CYAN}========================================================================{C_RESET}")
-    print(f"{C_CYAN}📊 BLAST RADIUS IMPACT SCORECARD: {policy_base}{C_RESET}")
-    print(f"{C_CYAN}========================================================================{C_RESET}")
-    
-    count_pass = sum(1 for r in results if r["status"] == "PASS")
+    # Save JSON Report
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    json_file = os.path.join(script_dir, f"sentinel_impact_report_{timestamp}.json")
+    with open(json_file, "w", encoding="utf-8") as f:
+        json.dump(results, f, indent=2)
+
+    # Save HTML Report
+    html_file = generate_html_report(results, policy_base, timestamp, script_dir)
+
+    print(f"\n{C_GREEN}[+] Impact Analysis JSON report created: {json_file}{C_RESET}")
+    print(f"{C_GREEN}[+] Impact Analysis HTML report created: {html_file}{C_RESET}")
+
     count_blocked = sum(1 for r in results if r["status"] == "BLOCKED")
-    count_excluded = sum(1 for r in results if r["status"] == "EXCLUDED")
-
-    for r in results:
-        if r["status"] == "EXCLUDED":
-            continue
-        status_color = C_GREEN if r["status"] == "PASS" else C_RED
-        print(f"  [{status_color}{r['status']:<7}{C_RESET}] Workspace: {r['workspace']:<35} Env: {r['env'].upper()}")
-
-    print(f"\n{C_GREEN}Passed Cleanly : {count_pass}{C_RESET}")
-    print(f"{C_RED}Blocked/Violated: {count_blocked}{C_RESET}")
-    print(f"Outside Scope   : {count_excluded}")
-    print(f"{C_CYAN}========================================================================{C_RESET}\n")
-
     if count_blocked > 0:
-        print(f"{C_RED}[-] Blast Radius Alert: {count_blocked} workspace(s) will be blocked by this policy!{C_RESET}")
+        print(f"\n{C_RED}[-] Blast Radius Alert: {count_blocked} workspace(s) will be blocked by this policy!{C_RESET}")
         sys.exit(1)
 
 if __name__ == "__main__":
