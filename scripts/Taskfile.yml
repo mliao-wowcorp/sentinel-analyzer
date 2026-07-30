@@ -2,11 +2,11 @@ version: '3'
 
 vars:
   DEFAULT_POLICY: "odessa_tenants/azure/networking/azure-gr-loadbalancer-deny-policies.sentinel"
-  DRY_RUN: "true" # 🔒 SAFETY DEFAULT: Dry run enabled by default
+  DRY_RUN: "true"
 
 tasks:
-  # 🎯 COMBINED TASK: Runs Validation first, then Blast Radius Analysis
   analyze:all:
+    dir: '{{.USER_WORKING_DIR}}'
     desc: "Executes local Sentinel validation (fmt + test) AND TFE Blast Radius Impact Analysis (Default: Dry Run)"
     cmds:
       - task: validate
@@ -14,14 +14,14 @@ tasks:
       - task: impact
         vars: { POLICY: "{{.POLICY}}", DRY_RUN: "{{.DRY_RUN}}" }
 
-  # 1️⃣ Local Code Validation
   validate:
+    dir: '{{.USER_WORKING_DIR}}'
     desc: "Runs local Sentinel formatting checks (sentinel fmt) and unit test assertions (sentinel test)"
     cmds:
       - python {{.TASKFILE_DIR}}/sentinel_validator.py "{{.POLICY | default .DEFAULT_POLICY}}"
 
-  # 2️⃣ TFE Workspace Impact Analysis
   impact:
+    dir: '{{.USER_WORKING_DIR}}'
     desc: "Evaluates target Sentinel policy against remote TFE workspace state histories"
     env:
       DRY_RUN: "{{.DRY_RUN}}"

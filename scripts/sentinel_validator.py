@@ -30,7 +30,9 @@ def main():
         sys.exit(1)
 
     style_status = "PASSED"
+    style_action = "🟢 Code layout matches HashiCorp standard"
     test_status = "PASSED"
+    test_action = "🟢 All unit test assertions succeeded"
     has_errors = False
 
     # 1. STYLE & FORMATTING CHECK
@@ -39,6 +41,7 @@ def main():
     if fmt_res.returncode != 0:
         print(f"  {C_RED}❌ FAILED Layout Rules: {policy_path}{C_RESET}")
         style_status = "FAILED"
+        style_action = f"💡 Auto-fix: Run <code>sentinel fmt {policy_path}</code>"
         has_errors = True
     else:
         print(f"  {C_GREEN}✅ PASSED: Formatting aligns with standard Sentinel code style.{C_RESET}")
@@ -53,12 +56,14 @@ def main():
         if test_res.returncode != 0:
             print(f"  {C_RED}❌ TEST SUITE FAILED for: {policy_path}{C_RESET}")
             test_status = "FAILED"
+            test_action = "❌ Check terminal trace or update test mocks in <code>test/</code> folder"
             has_errors = True
         else:
             print(f"  {C_GREEN}✅ PASSED: All unit test mock assertions succeeded.{C_RESET}")
     else:
         print(f"  {C_YELLOW}⚠️  SKIPPED: No local test directory found at '{test_dir}'.{C_RESET}")
         test_status = "SKIPPED"
+        test_action = f"⚠️ Add mock test cases under <code>{test_dir}</code>"
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     report_data = {
@@ -73,7 +78,7 @@ def main():
     with open(json_file, "w", encoding="utf-8") as f:
         json.dump(report_data, f, indent=2)
 
-    # Save HTML Report
+    # Save HTML Report with Action Hints
     status_color = "#dc3545" if has_errors else "#28a745"
     html_content = f"""<!DOCTYPE html>
 <html>
@@ -88,6 +93,7 @@ def main():
         th {{ background-color: #f1f3f5; }}
         .pass {{ color: #28a745; font-weight: bold; }}
         .fail {{ color: #dc3545; font-weight: bold; }}
+        code {{ background: #e9ecef; padding: 2px 6px; border-radius: 4px; font-family: monospace; }}
     </style>
 </head>
 <body>
@@ -99,9 +105,17 @@ def main():
     </div>
     <div class="card">
         <table>
-            <tr><th>Check Type</th><th>Result Status</th></tr>
-            <tr><td>Code Style & Layout (<code>sentinel fmt</code>)</td><td class="{'fail' if style_status == 'FAILED' else 'pass'}">{style_status}</td></tr>
-            <tr><td>Unit Test Suite (<code>sentinel test</code>)</td><td class="{'fail' if test_status == 'FAILED' else 'pass'}">{test_status}</td></tr>
+            <tr><th>Check Type</th><th>Result Status</th><th>Recommended Action / Resolution</th></tr>
+            <tr>
+                <td>Code Style & Layout (<code>sentinel fmt</code>)</td>
+                <td class="{'fail' if style_status == 'FAILED' else 'pass'}">{style_status}</td>
+                <td>{style_action}</td>
+            </tr>
+            <tr>
+                <td>Unit Test Suite (<code>sentinel test</code>)</td>
+                <td class="{'fail' if test_status == 'FAILED' else 'pass'}">{test_status}</td>
+                <td>{test_action}</td>
+            </tr>
         </table>
     </div>
 </body>

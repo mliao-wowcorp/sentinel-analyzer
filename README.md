@@ -81,10 +81,12 @@ task -t scripts/Taskfile.yml analyze:all DRY_RUN=false
 
 ## 📥 Pull Utility into Local Workspace
 
-To pull the `scripts` folder directly into your target Terraform workspace without creating a nested `.git` repository, open CMD or PowerShell in your IaC directory and run:
+To pull the `scripts` folder directly into your target Terraform workspace without creating a nested `.git` repository, open PowerShell or CMD in your IaC directory and run:
 
 ```cmd
-curl.exe -sL [https://github.com/mliao-wowcorp/sentinel-analyzer/archive/refs/heads/main.tar.gz](https://github.com/mliao-wowcorp/sentinel-analyzer/archive/refs/heads/main.tar.gz) | tar -xz --strip-components=1 scripts
+gh repo clone mliao-wowcorp/sentinel-analyzer temp_repo; Move-Item -Path temp_repo\scripts -Destination .\ -Force; Remove-Item -Recurse -Force temp_repo
+
+gh repo clone mliao-wowcorp/sentinel-analyzer temp_repo && xcopy /E /I /Y temp_repo\scripts scripts && rmdir /S /Q temp_repo
 
 ```
 
