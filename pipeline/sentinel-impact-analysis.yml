@@ -1,0 +1,151 @@
+name: "Sentinel Blast Radius Analyzer"
+
+on:
+  pull_request:
+    branches:
+      - "feature/HAS-2069-PR-check"
+    types: [opened, synchronize, reopened]
+    paths:
+      - "odessa_tenants/**/*.sentinel"
+  workflow_dispatch:
+    # 🎛️ USER INTERFACE CONTROL SWITCH
+    inputs:
+      target_scope:
+        description: "Evaluation width (Specific policy path, Domain subfolder, or 'odessa_tenants')"
+        required: true
+        default: "odessa_tenants/azure/database/azure-gr-ms-sqldatabase-deny-policies.sentinel"
+      dry_run:
+        description: "Dry Run Mode (Processes all assets but blocks remote plan container triggers)"
+        required: true
+        type: boolean
+        default: true
+
+jobs:
+  impact-assessment:
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Checkout Code Base"
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: "Install HashiCorp Sentinel CLI"
+        run: |
+          SENTINEL_VERSION="0.25.0"
+          curl -sSL https://releases.hashicorp.com/sentinel/${SENTINEL_VERSION}/sentinel_${SENTINEL_VERSION}_linux_amd64.zip -o sentinel.zip
+          sudo unzip -d /usr/local/bin sentinel.zip && rm sentinel.zip
+
+      - name: "Set up Python Environment"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: "Execute Multi-Policy Impact Radar Loops"
+        env:
+          TFE_TOKEN: ${{ secrets.TFE_ORG_TOKEN }}
+          TFE_ORG: ${{ vars.TFE_ORG }}
+          # 🎯 DYNAMIC VARIABLE RESOLVER
+          # Uses UI value if run manually, falls back to repo variable, defaults to 'false' if undefined
+          DRY_RUN: ${{ github.event.inputs.dry_run || vars.DRY_RUN || 'false' }}
+        run: |
+          TIMESTAMP=$(TZ="Australia/Sydney" date +"%Y-%m-%d %H:%M:%S AEST")
+          echo "## 🛡️ Production Impact Analysis Radar" > blast_radius_report.md
+          echo "As part of our governance gate criteria, predictive simulations were executed across active enterprise workspaces intersecting altered policy configurations." >> blast_radius_report.md
+          echo "_Last Evaluated: ${TIMESTAMP}_" >> blast_radius_report.md
+          echo "" >> blast_radius_report.md
+
+          RAW_TARGET=""
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            RAW_TARGET=$(git diff --name-only origin/${{ github.base_ref }} HEAD | grep '\.sentinel$' || true)
+          else
+            RAW_TARGET="${{ github.event.inputs.target_scope }}"
+          fi
+
+          if [ -z "$RAW_TARGET" ]; then
+            echo "🎉 No Sentinel files detected."
+            exit 0
+          fi
+
+          POLICIES=""
+          for entry in $RAW_TARGET; do
+            if [ "$entry" == "odessa_tenants" ] || [ "$entry" == "all" ]; then
+              POLICIES+="$(find odessa_tenants -type f -name "*.sentinel" ! -path "*/common-functions/*" ! -path "*/baseline/*" ! -path "*/test/*" ! -name "mock-*.sentinel" 2>/dev/null) "
+            elif [ -d "$entry" ]; then
+              POLICIES+="$(find "$entry" -type f -name "*.sentinel" ! -path "*/common-functions/*" ! -path "*/baseline/*" ! -path "*/test/*" ! -name "mock-*.sentinel" 2>/dev/null) "
+            elif [ -f "$entry" ]; then
+              if [[ "$entry" != *"common-functions"* && "$entry" != *"baseline"* && "$entry" == *.sentinel ]]; then
+                POLICIES+="$entry "
+              fi
+            fi
+          done
+
+          POLICIES=$(echo "$POLICIES" | xargs -n1 | sort -u | xargs)
+
+          if [ -z "$POLICIES" ]; then
+            echo "🎉 Evaluated targets contain no active rule definitions. Exiting successfully."
+            exit 0
+          fi
+
+          echo "🎯 Final calculated processing list: $POLICIES"
+
+          for policy in $POLICIES; do
+            echo " Spawning analyzer thread: $policy"
+            python3 -u .github/workflows/scripts/speculative_analyzer.py "$policy" &
+          done
+          wait
+          echo "✅ All background processes completed successfully."
+
+          for policy in $POLICIES; do
+            policy_base=$(basename "$policy")
+            target_md="intermediate_${policy_base}.md"
+            if [ -f "$target_md" ]; then
+              cat "$target_md" >> blast_radius_report.md
+              rm "$target_md"
+              echo -e "\n---\n" >> blast_radius_report.md
+            fi
+          done
+
+          echo "========================================================================"
+          echo "📋 PRINTING COMPILED SCORECARD GRAPH LIVE TO ACTIONS CONSOLE MAP"
+          echo "========================================================================"
+          cat blast_radius_report.md
+          echo "========================================================================"
+
+      - name: "Publish Enterprise Compliance Scorecard"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO_CONTEXT: ${{ github.repository }}
+        run: |
+          if [ -z "$PR_NUMBER" ] || [ "$PR_NUMBER" == "null" ]; then
+            echo "📥 Manual UI trigger detected. Skipping pull request comment engine."
+            exit 0
+          fi
+          
+          echo "📡 Synchronizing evaluation metrics with Pull Request #${PR_NUMBER}..."
+          
+          COMMENT_ID=$(gh api "repos/${REPO_CONTEXT}/issues/${PR_NUMBER}/comments" \
+            --jq '.[] | select(.user.login=="github-actions[bot]" and (.body | contains("Production Impact Analysis Radar"))) | .id' 2>/dev/null | head -n 1 || true)
+          
+          jq -n --rawfile body blast_radius_report.md '{body: $body}' > comment_payload.json
+          
+          if [[ -n "$COMMENT_ID" && "$COMMENT_ID" =~ ^[0-9]+$ ]]; then
+            echo "🔄 Patching existing tracking dashboard node ID: $COMMENT_ID..."
+            gh api -X PATCH "repos/${REPO_CONTEXT}/issues/comments/$COMMENT_ID" --input comment_payload.json > /dev/null
+          else
+            echo "📥 Posting fresh compliance scorecard matrix to timeline stream..."
+            gh api -X POST "repos/${REPO_CONTEXT}/issues/${PR_NUMBER}/comments" --input comment_payload.json > /dev/null
+          fi
+          
+          rm -f comment_payload.json
+
+      - name: "Archive Blast Radius Report"
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-blast-radius-report
+          path: |
+              blast_radius_report.md
+              intermediate_*.md
+              intermediate_*.html
+          if-no-files-found: ignore
+          retention-days: 7

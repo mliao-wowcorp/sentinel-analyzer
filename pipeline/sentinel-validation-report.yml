@@ -1,0 +1,102 @@
+name: "Sentinel Validation Report"
+
+on:
+  pull_request:
+    branches:
+      - "feature/HAS-2069-PR-check"
+    types: [opened, synchronize, reopened]
+    paths:
+      - "odessa_tenants/**/*.sentinel"
+  workflow_dispatch:
+    inputs:
+      target_scope:
+        description: "Evaluation width (Specific policy path, Domain subfolder, Platform subfolder, or 'odessa_tenants')"
+        required: true
+        default: "odessa_tenants/azure/database/azure-gr-ms-sqldatabase-deny-policies.sentinel"
+
+jobs:
+  sentinel-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Checkout Code Base"
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: "Install HashiCorp Sentinel CLI"
+        run: |
+          SENTINEL_VERSION="0.25.0"
+          curl -sSL https://releases.hashicorp.com/sentinel/${SENTINEL_VERSION}/sentinel_${SENTINEL_VERSION}_linux_amd64.zip -o sentinel.zip
+          sudo unzip -d /usr/local/bin sentinel.zip && rm sentinel.zip
+
+      - name: "Execute Engine & Generate Traces"
+        id: test_engine
+        run: |
+          RAW_TARGET=""
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            echo "🔍 PR trigger detected. Calculating modified independent policies..."
+            RAW_TARGET=$(git diff --name-only origin/${{ github.base_ref }} HEAD | grep '^odessa_tenants/' | sed -E 's|/test/([^/]+)/.*|/\1.sentinel|' | sort -u | xargs)
+            if [ -z "$RAW_TARGET" ]; then RAW_TARGET="all"; fi
+          else
+            echo "📥 Manual UI trigger detected. Ingesting path rules..."
+            RAW_TARGET="${{ github.event.inputs.target_scope }}"
+          fi
+
+          # Standardize targets down into file elements before running validation scripts
+          TARGETS=""
+          for entry in $RAW_TARGET; do
+            if [ "$entry" == "odessa_tenants" ] || [ "$entry" == "all" ]; then
+              TARGETS+="$(find odessa_tenants -type f -name "*.sentinel" ! -path "*/common-functions/*" ! -path "*/baseline/*" ! -path "*/test/*" ! -name "mock-*.sentinel" 2>/dev/null) "
+            elif [ -d "$entry" ]; then
+              TARGETS+="$(find "$entry" -type f -name "*.sentinel" ! -path "*/common-functions/*" ! -path "*/baseline/*" ! -path "*/test/*" ! -name "mock-*.sentinel" 2>/dev/null) "
+            elif [ -f "$entry" ]; then
+              TARGETS+="$entry "
+            fi
+          done
+
+          TARGETS=$(echo "$TARGETS" | xargs -n1 | sort -u | xargs)
+          if [ -z "$TARGETS" ]; then
+            echo "🎉 Clean tree. No specific scripts to evaluate."
+            exit 0
+          fi
+
+          # Save TARGETS to environment variable file for the next step to consume
+          echo "RESOLVED_TARGETS=$TARGETS" >> $GITHUB_ENV
+
+          set +e
+          .github/workflows/scripts/run-validation.sh $TARGETS > ../raw.log 2>&1
+          EXIT_CODE=$?
+          
+          cat ../raw.log
+          echo "ENGINE_EXIT_CODE=$EXIT_CODE" >> $GITHUB_ENV
+
+          set -e
+
+      - name: "Publish Validation Report Card"
+        if: always() # 🟢 CRITICAL: Ensures reports publish even if the validation step fails!
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Only run if we actually resolved targets in the previous step
+          if [ -n "$RESOLVED_TARGETS" ]; then
+            .github/workflows/scripts/report-results.sh \
+              "$ENGINE_EXIT_CODE" \
+              "$RESOLVED_TARGETS" \
+              "$GITHUB_WORKSPACE/pr_comment.md" \
+              "${{ github.repository }}" \
+              "${{ github.event.pull_request.number }}"
+          fi
+
+          # Enforce the hard gating check at the very end
+          if [ "$ENGINE_EXIT_CODE" -ne 0 ]; then
+            echo "💥 Validation failed. Blocking execution."
+            exit 1
+          fi
+      
+      - name: "Archive Validation Report Matrix"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: structural-validation-report
+          path: pr_comment.md
+          retention-days: 7
