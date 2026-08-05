@@ -17,7 +17,6 @@ A shift-left policy governance utility designed to validate Sentinel code layout
 │   ├── sentinel_impact_analyzer.py         # Local Python TFE workspace impact analyzer
 │   └── Taskfile.yml                         # Task runner orchestration framework
 └── README.md
-```
 
 ---
 
@@ -163,10 +162,3 @@ gh repo clone mliao-wowcorp/sentinel-analyzer temp_repo; Move-Item -Path temp_re
 
 # CMD / Windows Command Prompt:
 gh repo clone mliao-wowcorp/sentinel-analyzer temp_repo && xcopy /E /I /Y temp_repo\scripts scripts && rmdir /S /Q temp_repo
-
-
-```
-
-```
-
-```
