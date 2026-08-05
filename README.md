@@ -3,6 +3,8 @@
 A shift-left policy governance utility designed to validate Sentinel code layout/unit tests, and simulate policy blast radius against live Terraform Enterprise (TFE / HCP Terraform) workspaces before merging code to production.
 
 ## 📁 Repository Layout
+
+```text
 .
 ├── .github/
 │   └── workflows/
