@@ -347,7 +347,7 @@ def process_single_workspace(ws_name, ws_info, tfe_org, tfe_token, policy_path, 
                         continue
                     if in_print_block:
                         if not clean_line: continue
-                        if ".sentinel:" in clean_line or "Rule \"" in clean_line or "Fail -" in clean_line: break
+                        if "Rule \"" in clean_line or "Fail -" in clean_line: break
                         if any(k in clean_line for k in ["Is policy exempt:", "compliance checks...", "how to add an exemption", "Policy violation detected."]): continue
                         captured_violations.append(clean_line)
                 
