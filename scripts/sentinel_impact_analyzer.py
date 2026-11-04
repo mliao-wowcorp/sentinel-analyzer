@@ -283,12 +283,10 @@ def process_single_workspace(ws_name, ws_info, tfe_org, tfe_token, policy_path, 
             return result_record
 
         cfg_file = f"config_{ws_id}.json"
-        workspace_root = os.getcwd()
-        tfplan_funcs_path = os.path.abspath(os.path.join(workspace_root, "odessa_tenants/common-functions/tfplan-functions/tfplan-functions.sentinel"))
-        tfpolicy_funcs_path = os.path.abspath(os.path.join(workspace_root, "odessa_tenants/common-functions/tfpolicy-functions/tfpolicy-functions.sentinel"))
         
-        if not os.path.exists(tfplan_funcs_path): tfplan_funcs_path = os.path.abspath("tfplan-functions.sentinel")
-        if not os.path.exists(tfpolicy_funcs_path): tfpolicy_funcs_path = os.path.abspath("tfpolicy-functions.sentinel")
+        # Use relative paths with forward slashes to ensure HashiCorp go-getter resolves them properly on Windows
+        tfplan_funcs_path = "./odessa_tenants/common-functions/tfplan-functions/tfplan-functions.sentinel"
+        tfpolicy_funcs_path = "./odessa_tenants/common-functions/tfpolicy-functions/tfpolicy-functions.sentinel"
 
         config_payload = {
             "mock": {
@@ -337,26 +335,31 @@ def process_single_workspace(ws_name, ws_info, tfe_org, tfe_token, policy_path, 
                 else:
                     result_record["details"] = "Compatible: Rule passes perfectly against live architecture layout definitions."
         else:
+            combined_output = (run_sim.stdout or "") + "\n" + (run_sim.stderr or "")
+
+            # Print failure trace directly to the terminal
+            print(f"\n{C_RED}[!] Simulation failed on workspace: {ws_name}{C_RESET}")
+            for line in combined_output.split('\n'):
+                if any(k in line for k in ["CRITICAL", "❌", "error", "Error", "undefined", "Fail -"]):
+                    print(f"    {line}")
+
+            # Extract actual violation lines, ignoring the generic "Found X GCLB..." context header
             captured_violations = []
-            if run_sim.stdout:
-                in_print_block = False
-                for line in run_sim.stdout.split('\n'):
-                    clean_line = re.sub(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\s*', '', line).strip()
-                    if "Print messages:" in clean_line:
-                        in_print_block = True
-                        continue
-                    if in_print_block:
-                        if not clean_line: continue
-                        if "Rule \"" in clean_line or "Fail -" in clean_line: break
-                        if any(k in clean_line for k in ["Is policy exempt:", "compliance checks...", "how to add an exemption", "Policy violation detected."]): continue
+            for line in combined_output.split('\n'):
+                clean_line = re.sub(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\s*', '', line).strip()
+                clean_line = clean_line.replace('<', '&lt;').replace('>', '&gt;')
+                if not clean_line:
+                    continue
+                if any(marker in clean_line for marker in ["CRITICAL SECURITY VIOLATION", "❌", "error", "Error", "undefined"]) and "deprecation" not in clean_line.lower():
+                    captured_violations.append(clean_line)
+
+            # Fallback if no explicit error lines matched
+            if not captured_violations:
+                for line in combined_output.split('\n'):
+                    clean_line = line.strip()
+                    if clean_line.startswith("Fail -") or "Rule \"" in clean_line:
                         captured_violations.append(clean_line)
-                
-                if not captured_violations:
-                    for line in run_sim.stdout.split('\n'):
-                        clean_line = re.sub(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\s*', '', line).strip()
-                        if ("WARNING" in clean_line or "CRITICAL" in clean_line or "error" in clean_line.lower() or "Fail" in clean_line) and "deprecation" not in clean_line.lower() and "warnings occurred" not in clean_line.lower():
-                            captured_violations.append(clean_line)
-            
+
             mapped_violations = []
             for v in captured_violations[:4]:
                 detected_badge = "🔍 Context"

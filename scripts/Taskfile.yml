@@ -26,4 +26,6 @@ tasks:
     env:
       DRY_RUN: "{{.DRY_RUN}}"
     cmds:
+      - cmd: powershell -Command "if (Test-Path .sentinel) { Remove-Item -Recurse -Force .sentinel }"
+        ignore_error: true
       - python {{.TASKFILE_DIR}}/sentinel_impact_analyzer.py "{{.POLICY | default .DEFAULT_POLICY}}"
